@@ -1,0 +1,613 @@
+#include "tensor.h"
+#include "util.h"
+#include <cmath>
+#include <limits>
+
+using namespace toC;
+void Tensor::parse_onnx_tensor(const onnx::TensorProto& tensor)
+{
+
+	generate = true;
+	initialize = true;
+	isIO = false;
+	isConst = true;
+
+	// assert tensor is resolvable
+	if (onnx::TensorProto_DataLocation() != onnx::TensorProto_DataLocation_DEFAULT)
+		ERROR("unhandled: non-default data location in tensor " << tensor.name());
+	if (tensor.has_segment())
+		ERROR("unhandled: segmented data in tensor" << tensor.name());
+
+	int32_t datatype = tensor.data_type();
+	if (onnx::TensorProto_DataType_IsValid(datatype) == false)
+		ERROR("Non-valid data type " << datatype << " in tensor " << tensor.name());
+	data_type = static_cast<onnx::TensorProto_DataType>(datatype);
+
+	// Number of data in the ONNX protobuffer. Except if data is stored "externally" this will be 0 :|
+	int data_num_elements;
+	switch (datatype) {
+		case onnx::TensorProto_DataType_FLOAT:
+			data_num_elements = tensor.float_data_size();
+			break;
+		case onnx::TensorProto_DataType_DOUBLE:
+			data_num_elements = tensor.double_data_size();
+			break;
+
+		case onnx::TensorProto_DataType_FLOAT16:
+		case onnx::TensorProto_DataType_BFLOAT16:
+			data_num_elements = tensor.int32_data_size();
+			break;
+
+		// NB: all datatypes of 32bit or less are contained in int32_data field
+		case onnx::TensorProto_DataType_BOOL:
+			data_num_elements = tensor.int32_data_size();
+			break;
+		case onnx::TensorProto_DataType_INT8:
+			data_num_elements = tensor.int32_data_size();
+			break;
+		case onnx::TensorProto_DataType_UINT8:
+			data_num_elements = tensor.int32_data_size();
+			break;
+		case onnx::TensorProto_DataType_INT16:
+			data_num_elements = tensor.int32_data_size();
+			break;
+		case onnx::TensorProto_DataType_UINT16:
+			data_num_elements = tensor.int32_data_size();
+			break;
+		case onnx::TensorProto_DataType_INT32:
+			data_num_elements = tensor.int32_data_size();
+			break;
+		case onnx::TensorProto_DataType_UINT32:
+			data_num_elements = tensor.int32_data_size();
+			break;
+		case onnx::TensorProto_DataType_INT64:
+			data_num_elements = tensor.int64_data_size();
+			break;
+		case onnx::TensorProto_DataType_UINT64:
+			data_num_elements = tensor.uint64_data_size();
+			break;
+		default:
+			ERROR("unhandled tensor data type in tensor " << tensor.name());
+			break;
+	};
+
+	int64_t calc_num_data = 1;
+	for (int dim : tensor.dims()) {
+		data_dim.push_back(dim);
+		calc_num_data *= dim;
+	}
+	if (data_num_elements != calc_num_data) {
+		if (data_num_elements != 0)
+			ERROR("Error: data size does not match dimensions, and data_num_elem is not zero");
+		else if (tensor.has_raw_data() == false)
+			ERROR("Error: data size does not match dimensions, and no raw data");
+	}
+
+	data_buffer = malloc(data_num_elem() * data_elem_size());
+	if (data_buffer == NULL)
+		ERROR("memory allocation failed for tensor " << tensor.name());
+
+	if (tensor.has_raw_data()) {
+		std::string raw_data = tensor.raw_data(); // Yes, std::string!
+		if (raw_data.size() != (uint64_t)(calc_num_data * data_elem_size()))
+			ERROR("Error: tensor raw data size does not match dimensions");
+
+		memcpy(data_buffer, raw_data.c_str(), raw_data.size());
+	}
+
+	else {
+		switch (datatype) {
+			// NB: all datatypes of 32bit or less are contained in int32_data field
+			// The documentation is not quite clear on this, but this passes the tests.
+			case onnx::TensorProto_DataType_INT8:
+				for (int i = 0; i < data_num_elem(); i++)
+					((int8_t*)data_buffer)[i] = tensor.int32_data(i);
+				break;
+			case onnx::TensorProto_DataType_UINT8:
+				for (int i = 0; i < data_num_elem(); i++)
+					((uint8_t*)data_buffer)[i] = tensor.int32_data(i);
+				break;
+			case onnx::TensorProto_DataType_INT16:
+				for (int i = 0; i < data_num_elem(); i++)
+					((int16_t*)data_buffer)[i] = tensor.int32_data(i);
+				break;
+			case onnx::TensorProto_DataType_UINT16:
+				for (int i = 0; i < data_num_elem(); i++)
+					((uint16_t*)data_buffer)[i] = tensor.int32_data(i);
+				break;
+			case onnx::TensorProto_DataType_INT32:
+				for (int i = 0; i < data_num_elem(); i++)
+					((int32_t*)data_buffer)[i] = tensor.int32_data(i);
+				break;
+			case onnx::TensorProto_DataType_UINT32:
+				for (int i = 0; i < data_num_elem(); i++)
+					((uint32_t*)data_buffer)[i] = tensor.int32_data(i);
+				break;
+			case onnx::TensorProto_DataType_INT64:
+				for (int i = 0; i < data_num_elem(); i++)
+					((int64_t*)data_buffer)[i] = tensor.int64_data(i);
+				break;
+			case onnx::TensorProto_DataType_UINT64:
+				for (int i = 0; i < data_num_elem(); i++)
+					((uint64_t*)data_buffer)[i] = tensor.uint64_data(i);
+				break;
+			case onnx::TensorProto_DataType_FLOAT:
+				for (int i = 0; i < data_num_elem(); i++)
+					((float*)data_buffer)[i] = tensor.float_data(i);
+				break;
+			case onnx::TensorProto_DataType_FLOAT16:
+			case onnx::TensorProto_DataType_BFLOAT16:
+				for (int i = 0; i < data_num_elem(); i++)
+					((uint16_t*)data_buffer)[i] = tensor.int32_data(i);
+				break;
+			default:
+				ERROR("unhandled tensor data type in tensor " << tensor.name());
+				break;
+		};
+	}
+
+	name = tensor.name();
+	doc = tensor.doc_string();
+}
+
+std::string Tensor::cname(void) const
+{
+	return "tensor_" + cify_name(name);
+}
+
+int Tensor::data_elem_size(void) const
+{
+	switch (data_type) {
+		case onnx::TensorProto_DataType_FLOAT:
+			return sizeof(float);
+			break;
+		case onnx::TensorProto_DataType_DOUBLE:
+			return sizeof(double);
+			break;
+		case onnx::TensorProto_DataType_FLOAT16:
+		case onnx::TensorProto_DataType_BFLOAT16:
+			return sizeof(uint16_t);
+			break;
+		case onnx::TensorProto_DataType_INT8:
+			return sizeof(int8_t);
+			break;
+		case onnx::TensorProto_DataType_UINT8:
+			return sizeof(uint8_t);
+			break;
+		case onnx::TensorProto_DataType_INT16:
+			return sizeof(int16_t);
+			break;
+		case onnx::TensorProto_DataType_UINT16:
+			return sizeof(uint16_t);
+			break;
+		case onnx::TensorProto_DataType_INT32:
+			return sizeof(int32_t);
+			break;
+		case onnx::TensorProto_DataType_UINT32:
+			return sizeof(uint32_t);
+			break;
+		case onnx::TensorProto_DataType_INT64:
+			return sizeof(int64_t);
+			break;
+		case onnx::TensorProto_DataType_UINT64:
+			return sizeof(uint64_t);
+			break;
+		case onnx::TensorProto_DataType_BOOL:
+			return sizeof(bool);
+			break;
+		default:
+			ERROR("unhandled tensor data type in tensor " << name);
+			break;
+	};
+}
+
+std::string Tensor::data_type_str(void) const
+{
+	switch (data_type) {
+		case onnx::TensorProto_DataType_FLOAT:
+			return "float";
+			break;
+		case onnx::TensorProto_DataType_DOUBLE:
+			return "double";
+			break;
+		case onnx::TensorProto_DataType_FLOAT16:
+			return "_Float16";
+			break;
+		case onnx::TensorProto_DataType_BFLOAT16:
+			return "__bf16";
+			break;
+		case onnx::TensorProto_DataType_INT8:
+			return "int8_t";
+			break;
+		case onnx::TensorProto_DataType_UINT8:
+			return "uint8_t";
+			break;
+		case onnx::TensorProto_DataType_INT16:
+			return "int16_t";
+			break;
+		case onnx::TensorProto_DataType_UINT16:
+			return "uint16_t";
+			break;
+		case onnx::TensorProto_DataType_INT32:
+			return "int32_t";
+			break;
+		case onnx::TensorProto_DataType_UINT32:
+			return "uint32_t";
+			break;
+		case onnx::TensorProto_DataType_INT64:
+			return "int64_t";
+			break;
+		case onnx::TensorProto_DataType_UINT64:
+			return "uint64_t";
+			break;
+		case onnx::TensorProto_DataType_BOOL:
+			return "bool";
+			break;
+		case onnx::TensorProto_DataType_UNDEFINED:
+			return "UNDEFINED";
+			break;
+		default:
+			ERROR("unhandled tensor data type in tensor " << name);
+			break;
+	};
+}
+
+std::pair<std::string, std::string> Tensor::get_type_bounds() const
+{
+	switch (data_type) {
+		case onnx::TensorProto_DataType_INT8:
+			return std::make_pair("INT8_MIN", "INT8_MAX");
+		case onnx::TensorProto_DataType_UINT8:
+			return std::make_pair("0", "UINT8_MAX");
+		case onnx::TensorProto_DataType_INT16:
+			return std::make_pair("INT16_MIN", "INT16_MAX");
+		case onnx::TensorProto_DataType_UINT16:
+			return std::make_pair("0", "UINT16_MAX");
+		case onnx::TensorProto_DataType_INT32:
+			return std::make_pair("INT32_MIN", "INT32_MAX");
+		case onnx::TensorProto_DataType_UINT32:
+			return std::make_pair("0", "UINT32_MAX");
+		case onnx::TensorProto_DataType_INT64:
+			return std::make_pair("INT64_MIN", "INT64_MAX");
+		case onnx::TensorProto_DataType_UINT64:
+			return std::make_pair("0", "UINT64_MAX");
+		case onnx::TensorProto_DataType_FLOAT:
+			return std::make_pair("-FLT_MAX", "FLT_MAX");
+		case onnx::TensorProto_DataType_DOUBLE:
+			return std::make_pair("-DBL_MAX", "DBL_MAX");
+		default:
+			ERROR("unhandled tensor data type in tensor " << name);
+			return std::make_pair("", "");
+	};
+}
+
+template <typename T>
+inline void print_float(std::ostream& dst, T value)
+{
+	if (std::isnan(value)) {
+		dst << "NAN";
+	}
+	else if (std::isinf(value)) {
+		if (value > 0) {
+			dst << "INFINITY";
+		}
+		else {
+			dst << "-INFINITY";
+		}
+	}
+	else {
+		dst << std::fixed << value;
+		if (sizeof(T) == sizeof(float)) {
+			dst << "f";
+		}
+	}
+}
+
+// We implement float16 and bfloat16 in software so that the system onnx2c
+// runs on does not necessarily have to support these types natively.
+
+float float16_to_float(uint16_t h)
+{
+	// 1 sign bit, 5 exponent bits, 10 mantissa bits
+	union {
+		uint32_t bits;
+		float value;
+	} res;
+	uint32_t sign = (h >> 15) & 1;
+	uint32_t exponent = (h >> 10) & 0x1F;
+	uint32_t mantissa = h & 0x3FF;
+	if (exponent == 0) {
+		if (mantissa == 0) {
+			return 0.0f;
+		}
+		else {
+			// Subnormal
+			float x = mantissa * std::pow(2.0f, -24.0f);
+			return sign ? -x : x;
+		}
+	}
+	else if (exponent == 31) {
+		exponent = 0xff; // NaN and Infinity
+	}
+	else {
+		exponent = exponent + (127 - 15);
+	}
+	res.bits = (sign << 31) | (exponent << 23) | (mantissa << 13);
+	return res.value;
+}
+
+float bfloat16_to_float(uint16_t h)
+{
+	// 1 sign bit, 8 exponent bits, 7 mantissa bits
+	// This is the same as taking the high 16 bits of a float
+	union {
+		uint32_t bits;
+		float value;
+	} res;
+	res.bits = ((uint32_t)h) << 16;
+	return res.value;
+}
+
+void Tensor::print_element(std::ostream& dst, uint64_t element) const
+{
+	switch (data_type) {
+		case onnx::TensorProto_DataType_FLOAT: {
+			/*
+			some tests require large number e.g. 479001600
+			using std::showpoint prints 4.79002e+08f
+			The test passes if std::fixed is used printing 479001600.000000
+			*/
+			float* f = static_cast<float*>(data_buffer);
+			print_float(dst, f[element]);
+			break;
+		}
+		case onnx::TensorProto_DataType_DOUBLE: {
+			double* f = static_cast<double*>(data_buffer);
+			print_float(dst, f[element]);
+			break;
+		}
+		case onnx::TensorProto_DataType_FLOAT16: {
+			uint16_t* f = static_cast<uint16_t*>(data_buffer);
+			print_float(dst, float16_to_float(f[element]));
+			break;
+		}
+		case onnx::TensorProto_DataType_BFLOAT16: {
+			uint16_t* f = static_cast<uint16_t*>(data_buffer);
+			print_float(dst, bfloat16_to_float(f[element]));
+			break;
+		}
+		case onnx::TensorProto_DataType_INT8: {
+			int8_t* f = static_cast<int8_t*>(data_buffer);
+			// don't print as characters
+			dst << static_cast<int>(f[element]);
+			break;
+		}
+		case onnx::TensorProto_DataType_UINT8: {
+			uint8_t* f = static_cast<uint8_t*>(data_buffer);
+			// don't print as characters
+			dst << static_cast<int>(f[element]);
+			break;
+		}
+		case onnx::TensorProto_DataType_INT16: {
+			int16_t* f = static_cast<int16_t*>(data_buffer);
+			dst << f[element];
+			break;
+		}
+		case onnx::TensorProto_DataType_UINT16: {
+			uint16_t* f = static_cast<uint16_t*>(data_buffer);
+			dst << f[element];
+			break;
+		}
+		case onnx::TensorProto_DataType_INT32: {
+			int32_t* f = static_cast<int32_t*>(data_buffer);
+			dst << f[element];
+			break;
+		}
+		case onnx::TensorProto_DataType_UINT32: {
+			uint32_t* f = static_cast<uint32_t*>(data_buffer);
+			dst << f[element];
+			break;
+		}
+		case onnx::TensorProto_DataType_INT64: {
+			int64_t* f = static_cast<int64_t*>(data_buffer);
+			dst << f[element];
+			break;
+		}
+		case onnx::TensorProto_DataType_UINT64: {
+			uint64_t* f = static_cast<uint64_t*>(data_buffer);
+			dst << f[element];
+			break;
+		}
+		case onnx::TensorProto_DataType_BOOL: {
+			bool* f = static_cast<bool*>(data_buffer);
+			dst << f[element];
+			break;
+		}
+
+		default:
+			ERROR("unimplemented printing of initialized datatype " << data_type_str());
+	}
+}
+
+/* Print the tensor initialization values.
+ * This is the values between '=' and ';'.
+ * The function recurses into itself to print multidimensional initializers.
+ *
+ * dim: the dimension from which to print.
+ * offs: the offset into this dimension from where to print.
+ * This function recurses back into itself to print all more inner dimenstions there are.
+ * I.e. if calling with dim=0, offs=0 (which are default values),
+ * it prints the entire variable initialzation.
+ */
+void Tensor::print_tensor_initializer(std::ostream& dst, int dim, int offs) const
+{
+	if (is_scalar()) {
+		print_element(dst, offs);
+		return;
+	}
+
+	for (int i = 0; i < dim; i++)
+		dst << "  ";
+
+	dst << "{";
+
+	// if this is printing "outer" dimensions, recurse back in till we hit
+	// the innermost dimension
+	if (dim < (int)(data_dim.size() - 1)) {
+		dst << std::endl;
+		for (int i = 0; i < data_dim[dim]; i++) {
+			int remaining_dims = 1;
+			for (unsigned j = dim + 1; j < data_dim.size(); j++)
+				remaining_dims *= data_dim[j];
+			print_tensor_initializer(dst, dim + 1, offs + i * remaining_dims);
+			if (i < (data_dim[dim] - 1))
+				dst << ",";
+			dst << std::endl;
+		}
+		// indent a stand-alone closing brace
+		for (int i = 0; i < dim; i++)
+			dst << "  ";
+	}
+
+	else {
+		for (int i = 0; i < data_dim[dim]; i++) {
+			int element = offs + i;
+			print_element(dst, element);
+			if (i < (data_dim[dim] - 1))
+				dst << ", ";
+		}
+	}
+
+	dst << "}";
+}
+
+/* Print the 'float foo[N][N]' part of the tensor.
+ * This is used for declaring of the tensor and as parameters to function definitions and calls.
+ *
+ * Outcomes for the result are:
+ * - foo (callsite: i.e. for a function argument when function is called)
+ * - const float foo[N] (definition - i.e. not a callsite)
+ * And for scalars, it's a bit more complex:
+ * - foo (definition)
+ * - &foo (callsite, and the tensor is an scalar)
+ * - *foo (as a parameter in a function definition)
+ * */
+std::string Tensor::print_tensor(
+    std::string alternate_name,
+    bool is_callsite,
+    bool as_const,
+    bool is_definition) const
+{
+    std::string rv = "";
+
+    if (!is_callsite) {
+        bool print_const = as_const || isConst;
+
+        if (print_const)
+            rv += "const ";
+
+        rv += data_type_str() + " ";
+    } else {
+        /*
+         * Scalar tensors are represented as scalar objects but passed to
+         * node functions through pointers. The '&' must precede the whole
+         * lvalue, including its union prefix.
+         */
+        if (is_scalar() && !isIO)
+            rv += "&";
+
+        if (union_no >= 0)
+            rv += "tu" + std::to_string(union_no) + ".";
+    }
+
+    if (is_scalar()) {
+        /*
+         * Scalar parameters in function definitions are pointers.
+         * Call-site '&' handling was already done above.
+         */
+        if (!is_callsite && !is_definition)
+            rv += "*";
+    }
+
+    if (alternate_name == "")
+        rv += cname();
+    else
+        rv += alternate_name;
+
+    if (!is_callsite) {
+        for (unsigned i : data_dim)
+            rv += "[" + std::to_string(i) + "]";
+    }
+
+    return rv;
+}
+
+int Tensor::data_num_elem(void) const
+{
+	int dim = 1;
+	for (auto i : data_dim)
+		dim *= i;
+
+	return dim;
+}
+
+unsigned Tensor::rank(void) const
+{
+	return data_dim.size();
+}
+
+std::string Tensor::str_dimensions(void) const
+{
+	std::string rv = "";
+	for (auto d : data_dim) {
+		rv += std::to_string(d);
+		rv += " ";
+	}
+	return rv;
+}
+
+bool Tensor::is_used(void) const
+{
+	return name != "";
+}
+
+int64_t Tensor::get_data_element(uint64_t i) const
+{
+	switch (data_type) {
+		case onnx::TensorProto_DataType_INT32:
+			return ((int32_t*)data_buffer)[i];
+		case onnx::TensorProto_DataType_INT64:
+			return ((int64_t*)data_buffer)[i];
+		default:
+			ERROR("Unhandled data type");
+	}
+
+	return INT64_MIN;
+}
+float Tensor::get_data_element_float(uint64_t i) const
+{
+	switch (data_type) {
+		case onnx::TensorProto_DataType_FLOAT:
+			return ((float*)data_buffer)[i];
+		default:
+			ERROR("Unhandled data type");
+	}
+
+	return 0;
+}
+
+std::string Tensor::print_trace_dump(void) const
+{
+	// TODO: there was some new pretty printing stuff in C++20?
+	std::stringstream rv;
+	rv << "  " << name << ":" // "global", ONNX name
+	   << "  gen " << generate
+	   << "  init " << initialize
+	   << "  IO " << isIO
+	   << "  const " << isConst
+	   << "  recurs " << isRecursive
+	   << "  dims { " << str_dimensions() << "}"
+	   << "  buffer " << data_buffer;
+
+	return rv.str();
+}
